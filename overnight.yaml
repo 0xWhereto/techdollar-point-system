@@ -1,0 +1,162 @@
+repo:
+  name: usdte-points-engine
+  setup: npm install
+  baseline_validation:
+    - node -e "require('./src/points/config'); require('./src/points/accrualEngine'); require('./src/points/indexer');"
+  final_validation:
+    - node --test tests/points/*.test.js
+
+surfaces:
+  - id: points-models
+    title: Points data models
+    description: Sequelize models for points (sources, snapshots, accruals, epochs, exclusions). Mutations to these change the on-disk schema and the public API shape.
+    paths:
+      - src/models/PointSource.js
+      - src/models/BalanceSnapshot.js
+      - src/models/BalanceEvent.js
+      - src/models/PointAccrual.js
+      - src/models/PointEpoch.js
+      - src/models/PointsExcludedAddress.js
+      - src/models/index.js
+    test_paths:
+      - tests/points/models.test.js
+    invariants:
+      - The (source_id, address, period_start) unique index on point_accruals must exist (idempotency anchor).
+      - PointSource.contractAddress must be lowercased on write.
+      - PointAccrual.mode must reflect the epoch active at periodStart (no cross-mode rows).
+      - Adding a column requires backwards compatibility (default value or nullable).
+    risk: guarded
+    required_test_kinds:
+      - regression
+    quick_validation:
+      - node -e "require('./src/models')"
+    full_validation:
+      - node --test tests/points/models.test.js
+
+  - id: points-config
+    title: Points config + seed
+    description: Address/ABI/multiplier defaults; the only place env is read for points.
+    paths:
+      - src/points/config.js
+      - src/points/seed.js
+    test_paths:
+      - tests/points/config.test.js
+    invariants:
+      - MULTIPLIERS for mint/stake/liquidity must remain 1×/2×/3× unless an objective explicitly changes them.
+      - Default sources are seeded idempotently (re-running seed never duplicates).
+      - Pre-launch simulation epoch must end exactly at POINTS_LAUNCH_AT.
+    risk: safe
+    required_test_kinds:
+      - regression
+    quick_validation:
+      - node -e "require('./src/points/config'); require('./src/points/seed');"
+
+  - id: points-adapters
+    title: On-chain adapters (USDte, sUSDte, Curve, Morpho)
+    description: One adapter per source surface. They read the chain and produce BalanceSnapshot rows.
+    paths:
+      - src/points/adapters/BaseAdapter.js
+      - src/points/adapters/Erc20BalanceAdapter.js
+      - src/points/adapters/CurveLpAdapter.js
+      - src/points/adapters/MorphoVaultAdapter.js
+      - src/points/adapters/MorphoMarketAdapter.js
+    test_paths:
+      - tests/points/adapters.test.js
+    invariants:
+      - Curve LP value must be computed as `lpBalance × get_virtual_price()` (full LP value, not USDte slice).
+      - Morpho adapters must be a no-op when their address/marketId is unset (no crash, no false snapshots).
+      - Adapters never mutate PointAccrual rows directly — only BalanceSnapshot/BalanceEvent.
+      - Persistence is idempotent against duplicate Transfer events.
+    risk: guarded
+    required_test_kinds:
+      - regression
+      - integration
+    quick_validation:
+      - node -e "require('./src/points/adapters/BaseAdapter'); require('./src/points/adapters/Erc20BalanceAdapter'); require('./src/points/adapters/CurveLpAdapter'); require('./src/points/adapters/MorphoVaultAdapter'); require('./src/points/adapters/MorphoMarketAdapter');"
+    forbidden_paths:
+      - src/services/transactionMonitor.js
+
+  - id: points-engine
+    title: Accrual engine + indexer orchestrator
+    description: Pure(ish) accrual integration + the in-process indexer that ticks on a schedule.
+    paths:
+      - src/points/accrualEngine.js
+      - src/points/indexer.js
+    test_paths:
+      - tests/points/accrualEngine.test.js
+      - tests/points/indexer.test.js
+    invariants:
+      - Accrual must be idempotent — re-running on the same snapshots writes zero new rows.
+      - Indexer must not double-write snapshots when ticks overlap (tickInProgress guard).
+      - Excluded addresses must never appear in PointAccrual.
+      - Adapter failures must not abort the entire tick — failures are isolated per source.
+    risk: guarded
+    required_test_kinds:
+      - regression
+      - integration
+    quick_validation:
+      - node -e "require('./src/points/accrualEngine'); require('./src/points/indexer');"
+
+  - id: points-routes
+    title: Public + admin HTTP routes
+    description: Read-side leaderboard / wallet / admin upserts and recompute trigger.
+    paths:
+      - src/routes/points.js
+      - src/points/pointsService.js
+    test_paths:
+      - tests/points/routes.test.js
+    invariants:
+      - Public endpoints must not require auth.
+      - All /admin/* endpoints require role=admin (authenticate + authorize).
+      - mode parameter only ever takes 'live' or 'all' — anything else is treated as 'live'.
+      - Response shape stays { success: bool, data | error }.
+    risk: guarded
+    required_test_kinds:
+      - regression
+      - integration
+    quick_validation:
+      - node -e "require('./src/routes/points')"
+
+  - id: points-frontend
+    title: Frontend Points page + API client
+    description: Live UI consuming the points API.
+    paths:
+      - frontend/src/pages/app/Points.jsx
+      - frontend/src/utils/api.js
+    test_paths: []
+    invariants:
+      - Address comparison is case-insensitive (lowercase compare).
+      - Wallet-not-connected path renders without making API calls.
+      - Mode toggle persists per-render only (no global state mutation).
+    risk: safe
+    required_test_kinds:
+      - regression
+
+manual_only_paths:
+  - contracts/**
+  - frontend/node_modules/**
+  - logs/**
+  - database.sqlite
+
+shared_paths:
+  - src/app.js
+  - src/models/index.js
+  - env.example
+  - README.md
+
+defaults:
+  report_dir: proving-ground/reports
+  branch_prefix: points/improve
+  attempt_limit: 1
+  repair_turns: 1
+  proposal_mode: staged
+  staged:
+    max_source_files: 1
+    max_test_files: 1
+    max_code_blocks: 1
+    max_test_blocks: 1
+    window_line_cap: 200
+  diminishing_returns:
+    last_n_rounds: 5
+    avg_landed_threshold: 1.0
+    rounds_since_last_landing_stop: 3

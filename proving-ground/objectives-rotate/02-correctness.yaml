@@ -1,0 +1,15 @@
+goal: Lock in correctness of the read-side service and the accrual math with direct unit tests; fix the mode='all' rank bug.
+allowed_surfaces:
+  - points-engine
+  - points-routes
+success:
+  - tests/points/accrualEngine.test.js proves idempotency, time-weighting math, and exclusion enforcement.
+  - tests/points/pointsService.test.js proves rank computation honors mode in both 'live' and 'all'.
+  - tests/points/curve_value.test.js asserts usdValue == lpBalance * virtualPrice for a fixed pair.
+  - getAddressTotals subquery uses caller's mode (no hardcoded 'live').
+required_tests:
+  - regression
+stop_conditions:
+  - Test suite execution time grows above 5s per file.
+  - New tests rely on live RPC (must be fully mocked).
+priority: high

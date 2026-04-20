@@ -1,0 +1,12 @@
+goal: Concurrency-bound the per-tick RPC fan-out so snapshot ticks stay under 30s for up to 5_000 holders.
+allowed_surfaces:
+  - points-adapters
+success:
+  - Erc20BalanceAdapter and CurveLpAdapter use a configurable concurrency cap (default 10) for balanceOf calls.
+  - Per-tick metrics logged: snapshot count, ms elapsed, RPC errors.
+  - No external dep added (use a tiny local p-limit shim, ~15 lines).
+required_tests:
+  - regression
+stop_conditions:
+  - Concurrency cap exceeds 25 (RPC providers rate-limit hard above that).
+priority: medium

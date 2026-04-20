@@ -1,0 +1,62 @@
+goal: |
+  Raise the points subsystem to production quality without changing its public
+  contract. Every public function should throw a structured PointsError (with
+  code/field/fixHint) instead of bare Error. Every adapter must isolate its
+  own failures so one broken source does not stall the others. The accrual
+  engine must remain idempotent under all conditions and have a direct
+  regression test for that property.
+
+allowed_surfaces:
+  - points-models
+  - points-config
+  - points-adapters
+  - points-engine
+  - points-routes
+
+success:
+  - Every throw in src/points/** and src/routes/points.js uses PointsError
+    with a stable `code`, the offending `field`, and a one-line `fixHint`.
+  - Adapter failures are isolated: a failing CurveLpAdapter (e.g. pool not
+    deployed) never aborts a tick or stops other adapters running.
+  - accrualEngine.processSource is proven idempotent by a unit test:
+    running twice on the same snapshot set produces exactly the same row count.
+  - getAddressTotals returns a correct rank when mode='all' (currently the
+    inner subquery hardcodes 'live').
+  - Curve LP value is unit-tested against a fixed virtual_price + LP balance
+    pair, locking in the "full LP value, not USDte slice" requirement.
+  - Indexer exposes per-source health (lastTickAt, lastError, consecutiveFailures)
+    via /api/points/admin/health for operator visibility.
+
+required_tests:
+  - regression
+  - integration
+  - objective-proof
+
+stop_conditions:
+  - The change would alter any column on existing point_* tables in a
+    backwards-incompatible way (rename, drop, type change without default).
+  - The change would weaken the (source_id, address, period_start) idempotency
+    anchor on point_accruals.
+  - The change would lower any of the spec'd multipliers (1×/2×/3×) or change
+    Curve LP valuation away from get_virtual_price().
+  - The change would require touching contracts/** or src/services/transactionMonitor.js.
+  - The change would need to add or rename an exported function on points/*
+    (public contract is locked for this objective).
+  - The change cannot add or update its own proofing tests.
+  - The change invents a new error shape instead of reusing PointsError.
+
+evidence:
+  - During the smoke test, getCurrentExposure returned `basePointsPerUsdPerDay: null`
+    because raw=true returned a column shape that didn't match the JS attribute.
+    That class of bug suggests we have zero direct unit coverage on the service layer.
+  - Adapters currently throw plain Error or log a warning and continue. There is
+    no structured error code, so a downstream UI cannot tell "Curve pool not
+    deployed yet" apart from "RPC timed out".
+  - The indexer tick logs each adapter failure once per minute forever, with no
+    backoff — when Curve / Morpho are unconfigured this becomes log spam.
+  - getAddressTotals' rank query forces mode to 'live' even when caller asks
+    for mode='all', so the rank is wrong during simulation.
+  - Holders Set is held in process memory and grows monotonically; on a long-
+    running indexer this is a slow leak.
+
+priority: high

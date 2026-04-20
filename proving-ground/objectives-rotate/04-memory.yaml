@@ -1,0 +1,13 @@
+goal: Bound the indexer's holders Set so it cannot grow without limit on long-running deployments.
+allowed_surfaces:
+  - points-models
+  - points-engine
+success:
+  - Holders are reloaded from BalanceEvent + BalanceSnapshot on every full restart (already true) but in-memory Set is capped at 50_000 per source with LRU eviction.
+  - Adapters consult the DB for unknown addresses on demand instead of holding all addresses forever.
+  - Memory growth is documented as bounded.
+required_tests:
+  - regression
+stop_conditions:
+  - Eviction loses a holder we should still be tracking (verified by snapshot diff).
+priority: medium

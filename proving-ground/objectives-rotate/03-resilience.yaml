@@ -1,0 +1,14 @@
+goal: Per-source circuit breaker with exponential backoff so one failing adapter never spams logs or starves siblings.
+allowed_surfaces:
+  - points-engine
+success:
+  - Indexer tracks { consecutiveFailures, lastError, nextRetryAt, lastSuccessAt } per source.
+  - When consecutiveFailures >= 3 the source is skipped until nextRetryAt; backoff caps at 30 minutes.
+  - A successful tick resets consecutiveFailures to 0 and clears lastError.
+  - A new admin endpoint POST /api/points/admin/health/:key exposes the live state.
+required_tests:
+  - regression
+stop_conditions:
+  - The breaker silently drops snapshots that succeeded.
+  - The breaker hides errors from logs entirely (errors must still log on first occurrence and on every retry).
+priority: high

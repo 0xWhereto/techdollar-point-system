@@ -1,0 +1,16 @@
+goal: Replace every bare throw and silent log-and-continue in src/points/** with a structured PointsError carrying { code, field, fixHint }.
+allowed_surfaces:
+  - points-config
+  - points-adapters
+  - points-engine
+  - points-routes
+success:
+  - src/points/errors.js exports class PointsError with stable codes (VALIDATION, CONFIG_MISSING, RPC_FAILURE, SUBGRAPH_FAILURE, IDEMPOTENCY).
+  - All `throw new Error(...)` in src/points/** and src/routes/points.js are replaced.
+  - Routes serialize PointsError with status 400 (VALIDATION), 404 (NOT_FOUND), 502 (UPSTREAM_*), 500 (otherwise).
+required_tests:
+  - regression
+stop_conditions:
+  - Any breaking change to public API response shape.
+  - Any change that would replace the existing test files (only additions).
+priority: high
