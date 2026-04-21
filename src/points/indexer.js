@@ -7,6 +7,7 @@ const { recordRound, isExhausted } = require('./diminishingReturns');
 
 const BaseAdapter = require('./adapters/BaseAdapter');
 const Erc20BalanceAdapter = require('./adapters/Erc20BalanceAdapter');
+const Erc20MintEventAdapter = require('./adapters/Erc20MintEventAdapter');
 const CurveLpAdapter = require('./adapters/CurveLpAdapter');
 const MorphoVaultAdapter = require('./adapters/MorphoVaultAdapter');
 const MorphoMarketAdapter = require('./adapters/MorphoMarketAdapter');
@@ -57,6 +58,8 @@ class Indexer {
     switch (source.sourceType) {
       case 'erc20_balance':
         return new Erc20BalanceAdapter({ source, provider: this.provider });
+      case 'erc20_mint_event':
+        return new Erc20MintEventAdapter({ source, provider: this.provider });
       case 'curve_lp':
       case 'curve_gauge':
         return new CurveLpAdapter({ source, provider: this.provider });
@@ -196,6 +199,13 @@ class Indexer {
             const written = await adapter.persistSnapshots(rows);
             landed += written;
             logger.info(`[points-indexer] ${source.key}: ${written}/${rows.length} snapshots`);
+          }
+          // Event-based sources (e.g. erc20_mint_event) write accruals directly
+          // here, bypassing snapshots. Default impl on BaseAdapter returns 0.
+          const eventAccruals = await adapter.processEventAccruals(now);
+          if (eventAccruals) {
+            landed += eventAccruals;
+            logger.info(`[points-indexer] ${source.key}: ${eventAccruals} event accruals`);
           }
           this.recordSuccess(source.id);
         } catch (err) {

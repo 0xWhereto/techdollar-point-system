@@ -1,14 +1,21 @@
 # techdollar-point-system
 
-On-chain points engine for the **TechDollar (USDte)** protocol — distributes
-time-weighted points to early users for four behaviours:
+On-chain points engine for the **TechDollar (USDte)** protocol. Distributes
+points to early users across **two accrual modes** — a one-shot bonus on
+mint, and per-hour time-weighted accrual on capital that's actually deployed:
 
-| Surface          | Multiplier | How USD value is measured                                 |
-| ---------------- | ---------- | --------------------------------------------------------- |
-| USDte hold       | **1×**     | `balanceOf(user)` of USDte (peg = $1)                     |
-| sUSDte stake     | **2×**     | `balanceOf(user)` × `getExchangeRate()`                   |
-| Curve LP         | **3×**     | `(lpBalance + gaugeBalance) × pool.get_virtual_price()` — full LP value, not the USDte slice |
-| Morpho supply    | **3×**     | `position.assets / 1e18` from the Morpho Blue subgraph    |
+| # | Surface | Mode | Multiplier | What's measured |
+|---|---|---|---|---|
+| 1 | **USDte mint** | **one-shot** | **1×** | `mintedUsd × pointsPerMint` per `Transfer(0x0 → user)` (default 10 pts / USDte) |
+| 2 | USDte hold | per-hour | 1× | `balanceOf(user)` of USDte (peg = $1) |
+| 3 | sUSDte stake | per-hour | 2× | `balanceOf(user)` × `getExchangeRate()` |
+| 4 | Curve LP | per-hour | 3× | `(lpBalance + gaugeBalance) × pool.get_virtual_price()` — **full LP value**, not the USDte slice |
+| 5 | Morpho supply | per-hour | 3× | `position.assets / 1e18` from the Morpho Blue subgraph |
+
+Surfaces 2–5 are time-weighted: points accrue per second (snapshotted hourly)
+based on the **average** USD value held between consecutive snapshots. Surface
+1 is event-based: each mint produces exactly one accrual row, anchored to the
+originating tx hash so re-scanning a block range never double-counts.
 
 The engine is written for an Express + Sequelize host app (e.g. the parent
 USDte backend) but ships as a self-contained module so you can extract the
@@ -19,9 +26,10 @@ together.
 
 - 5 substantive improvement passes already landed (see
   [`proving-ground/reports/20260420-205241/proof.md`](proving-ground/reports/20260420-205241/proof.md))
-- 5 test suites, 40 tests, all passing — pure-function coverage of the
-  accrual math, the Curve LP-valuation invariant, the diminishing-returns
-  detector, the in-tree `pLimit`, and the structured `PointsError`.
+- 6 test suites, **65 tests**, all passing — pure-function coverage of the
+  time-weighted accrual math, the mint-event accrual math, the Curve
+  LP-valuation invariant, the diminishing-returns detector, the in-tree
+  `pLimit`, and the structured `PointsError`.
 - Designed to integrate with the
   [`almanac-engine`](https://github.com/0xWhereto/almanac-engine)
   autonomous improvement loop — `overnight.yaml` and `objective.yaml` at
@@ -33,8 +41,9 @@ together.
 git clone https://github.com/0xWhereto/techdollar-point-system.git
 cd techdollar-point-system
 npm install
-cp .env.example .env       # fill in addresses when you have them
-npm test                   # 40 tests, all DB-free, runs in <1s
+cp .env.example .env                              # fill in addresses when you have them
+npm test                                          # 65 tests, all DB-free, <1s
+node scripts/migrate-points-mint-event.js         # idempotent, safe on fresh + existing DBs
 ```
 
 To exercise the indexer against a live RPC + a real Curve / Morpho
@@ -50,27 +59,31 @@ node scripts/smoke.js
 ```
 src/points/
 ├── config.js              # central config + ABIs + multipliers + season dates
+│                          #   POINTS_PER_USDTE_MINTED env knob lives here
 ├── errors.js              # PointsError(code, message, { field, fixHint })
-│                          #   codes: VALIDATION, NOT_FOUND, CONFLICT,
-│                          #          CONFIG_MISSING, RPC_FAILURE,
-│                          #          SUBGRAPH_FAILURE, IDEMPOTENCY, INTERNAL
 ├── curveValue.js          # pure: lpUsdValue(lpAmount, virtualPrice)
 ├── pLimit.js              # 15-line in-tree concurrency limiter, zero deps
-├── diminishingReturns.js  # ported from almanac-engine; tells the indexer
-│                          #   when to stop bothering
-├── accrualEngine.js       # pure computeAccrualRows() + DB-touching wrapper
+├── diminishingReturns.js  # ported from almanac-engine
+├── accrualEngine.js       # pure computeAccrualRows() — TIME-WEIGHTED math
 ├── indexer.js             # tick loop with per-source circuit breaker
 │                          #   (3 fails → 30s → 30min backoff)
+│                          #   calls discoverHolders → snapshotAll →
+│                          #   processEventAccruals (NEW) per source
 ├── pointsService.js       # read-side: leaderboard, address totals, exposure
 ├── seed.js                # idempotent seed for default sources + epochs
 └── adapters/
-    ├── BaseAdapter.js          # holder-set, persistSnapshots, markProgress
-    ├── Erc20BalanceAdapter.js  # USDte + sUSDte (Transfer scan + balanceOf)
-    ├── CurveLpAdapter.js       # LP + gauge Transfer scan, virtual_price math
-    ├── MorphoVaultAdapter.js   # MetaMorpho positions via subgraph
-    └── MorphoMarketAdapter.js  # Morpho Blue market positions via subgraph
+    ├── BaseAdapter.js              # holder-set, persistSnapshots, markProgress
+    │                               # default processEventAccruals() returns 0
+    ├── Erc20BalanceAdapter.js      # USDte hold + sUSDte stake (TIME-WEIGHTED)
+    ├── Erc20MintEventAdapter.js    # USDte mint (ONE-SHOT) — exports the pure
+    │                               #   computeMintAccrualRow() helper for tests
+    ├── CurveLpAdapter.js           # LP + gauge × virtual_price (TIME-WEIGHTED)
+    ├── MorphoVaultAdapter.js       # MetaMorpho positions via subgraph
+    └── MorphoMarketAdapter.js      # Morpho Blue market positions via subgraph
 
-src/models/                # Sequelize models for the 6 tables
+src/models/                # Sequelize models — point_accruals now carries
+                           # accrual_type ('time_weighted' | 'mint_event')
+                           # and tx_hash (NOT NULL DEFAULT '')
 src/routes/points.js       # GET /sources, /epochs, /leaderboard, /stats,
                            #     /wallet/:address, /me
                            # POST /admin/{sources,epochs,exclude,recompute,accrue}
@@ -79,7 +92,10 @@ src/middleware/auth.js     # MINIMAL auth stub — replace when integrating
 src/config/database.js     # SQLite by default, Postgres via env
 src/utils/logger.js        # tiny logger stub — replace with your host's
 
-tests/points/              # 5 suites, 40 tests, all DB-free
+scripts/migrate-points-mint-event.js   # idempotent schema bump for prod DBs
+scripts/smoke.js                       # one-tick indexer probe vs live RPC
+
+tests/points/              # 6 suites, 65 tests, all DB-free
 proving-ground/            # almanac-engine adapter + objectives + proof packets
 overnight.yaml             # surfaces with invariants, risk, validation cmds
 objective.yaml             # current objective + evidence + stop conditions
@@ -98,6 +114,8 @@ objective.yaml             # current objective + evidence + stop conditions
 
 ## How accrual works
 
+### Time-weighted (hold, stake, LP, Morpho)
+
 Between two consecutive snapshots S<sub>i</sub> and S<sub>i+1</sub>, the user
 held `avg(S_i.usdValue, S_{i+1}.usdValue)` USD-equivalent for
 `S_{i+1}.snapshotAt − S_i.snapshotAt` seconds. Points for that interval:
@@ -107,8 +125,31 @@ points = avgUsd × durationDays × basePointsPerUsdPerDay
               × source.multiplier × epoch.boost
 ```
 
-The unique index on `(source_id, address, period_start)` makes the engine
-**idempotent** — re-running over the same snapshot history is a no-op.
+`accrual_type = 'time_weighted'`, `tx_hash = ''`. Idempotency anchor: the
+unique index `(source_id, address, period_start, tx_hash)` — re-running over
+the same snapshot history is a no-op.
+
+### One-shot (mint)
+
+For each `Transfer(from = 0x0, to = user, amount)` on the USDte contract:
+
+```
+mintedUsd  = amount / 10^decimals × pegUsd
+basePoints = mintedUsd × pointsPerMint           # default 10 pts / USDte
+points     = basePoints × source.multiplier × epoch.boost
+```
+
+`accrual_type = 'mint_event'`, `tx_hash = '0x…'`,
+`period_start = period_end = blockTime`, `duration_seconds = 0`. The same
+unique index is the dedup anchor — re-scanning a block range never
+double-counts because the tx hash makes each row unique.
+
+### Both modes coexist
+
+The two accrual types live in the same `point_accruals` table and aggregate
+into the same leaderboard. The `pointsPerMint` knob is a per-source field
+(`extraConfig.pointsPerMint`) so you can rebalance the mint bonus per
+season without a migration.
 
 ## Curve LP valuation (locked-in spec)
 

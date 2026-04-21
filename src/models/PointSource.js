@@ -28,11 +28,12 @@ const PointSource = sequelize.define('PointSource', {
   },
   sourceType: {
     type: DataTypes.ENUM(
-      'erc20_balance',     // Plain wallet ERC20 balance (USDte hold, sUSDte hold)
-      'curve_lp',          // Curve LP token balance, valued via get_virtual_price()
-      'curve_gauge',       // Liquidity gauge deposit (LP staked in gauge)
-      'morpho_market',     // Direct Morpho Blue market supply (loan token = USDte)
-      'morpho_vault'       // MetaMorpho vault share (ERC-4626)
+      'erc20_balance',     // Plain wallet ERC20 balance (USDte hold, sUSDte hold) — TIME-WEIGHTED
+      'erc20_mint_event',  // ERC20 Transfer(0x0 → user) — ONE-SHOT per mint tx
+      'curve_lp',          // Curve LP token balance, valued via get_virtual_price() — TIME-WEIGHTED
+      'curve_gauge',       // Liquidity gauge deposit (LP staked in gauge) — TIME-WEIGHTED
+      'morpho_market',     // Direct Morpho Blue market supply (loan token = USDte) — TIME-WEIGHTED
+      'morpho_vault'       // MetaMorpho vault share (ERC-4626) — TIME-WEIGHTED
     ),
     allowNull: false,
     field: 'source_type'

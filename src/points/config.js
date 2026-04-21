@@ -43,12 +43,24 @@ const SNAPSHOT_BATCH_SIZE = parseInt(process.env.POINTS_SNAPSHOT_BATCH || '500',
 const EVENT_BLOCK_RANGE = parseInt(process.env.POINTS_EVENT_BLOCK_RANGE || '5000', 10);
 
 // ---------- Multipliers per spec ----------
-
+//
+// Per the points spec:
+//   - Mint USDte    : ONE-SHOT, 1× multiplier, 10 points per USDte minted
+//   - Hold USDte    : per-hour, 1× multiplier
+//   - Stake (sUSDte): per-hour, 2× multiplier
+//   - Curve LP      : per-hour, 3× multiplier (full LP value via virtual_price)
+//   - Morpho supply : per-hour, 3× multiplier (vault and market alike)
+//
 const MULTIPLIERS = {
-  mint: 1.0,        // USDte hold
-  stake: 2.0,       // sUSDte hold
-  liquidity: 3.0    // Curve LP, Morpho market, Morpho vault
+  mint: 1.0,        // USDte mint (one-shot)
+  hold: 1.0,        // USDte hold (time-weighted)
+  stake: 2.0,       // sUSDte hold (time-weighted)
+  liquidity: 3.0    // Curve LP + Morpho (time-weighted)
 };
+
+// One-shot bonus: how many points per USDte minted, BEFORE the source multiplier.
+// Tunable per season via PointSource.extraConfig.pointsPerMint without a redeploy.
+const POINTS_PER_USDTE_MINTED = parseFloat(process.env.POINTS_PER_USDTE_MINTED || '10');
 
 // ---------- ABIs ----------
 
@@ -88,14 +100,31 @@ const SIMULATION_START_AT = process.env.POINTS_SIMULATION_START_AT || '2026-04-0
 
 const DEFAULT_SOURCES = [
   {
-    key: 'usdte_hold',
-    name: 'USDte Hold',
-    description: 'Earn points by holding USDte in your wallet. 1× multiplier.',
-    sourceType: 'erc20_balance',
+    key: 'usdte_mint',
+    name: 'USDte Mint',
+    description: `One-shot bonus credited when you mint USDte. ${POINTS_PER_USDTE_MINTED} points per USDte minted, 1× multiplier.`,
+    sourceType: 'erc20_mint_event',
     chainId: CHAIN_ID,
     contractAddress: USDTE_ADDRESS,
     decimals: 18,
     multiplier: MULTIPLIERS.mint,
+    basePointsPerUsdPerDay: null,                 // not used for event sources
+    snapshotIntervalSeconds: 3600,                // governs how often the indexer polls for new mint events
+    extraConfig: {
+      pegUsd: 1.0,
+      pointsPerMint: POINTS_PER_USDTE_MINTED,
+      fromAddress: '0x0000000000000000000000000000000000000000'
+    }
+  },
+  {
+    key: 'usdte_hold',
+    name: 'USDte Hold',
+    description: 'Earn points every hour you hold USDte in your wallet. 1× multiplier.',
+    sourceType: 'erc20_balance',
+    chainId: CHAIN_ID,
+    contractAddress: USDTE_ADDRESS,
+    decimals: 18,
+    multiplier: MULTIPLIERS.hold,
     basePointsPerUsdPerDay: 1.0,
     snapshotIntervalSeconds: 3600,
     extraConfig: { pegUsd: 1.0 }
@@ -205,6 +234,7 @@ module.exports = {
   SNAPSHOT_BATCH_SIZE,
   EVENT_BLOCK_RANGE,
   MULTIPLIERS,
+  POINTS_PER_USDTE_MINTED,
   ERC20_ABI,
   SUSDTE_ABI,
   CURVE_POOL_ABI,

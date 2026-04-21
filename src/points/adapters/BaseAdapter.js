@@ -60,6 +60,17 @@ class BaseAdapter {
   }
 
   /**
+   * Convert event-driven accruals (e.g. ERC20 mints) into PointAccrual rows
+   * directly, bypassing snapshots. Default: no-op. Override for one-shot
+   * sources like Erc20MintEventAdapter.
+   *
+   * Returns the number of accrual rows written.
+   */
+  async processEventAccruals(_now) {
+    return 0;
+  }
+
+  /**
    * Take a snapshot of every known holder. Returns array of snapshot rows
    * to be persisted by the orchestrator.
    */
