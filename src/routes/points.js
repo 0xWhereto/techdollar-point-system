@@ -54,16 +54,62 @@ router.get('/stats', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/points/wallet/:address
+ * Single-roundtrip dashboard payload: lifetime points, current per-hour and
+ * per-day rate, rank, active epoch, and per-source positions (USD currently
+ * deployed in each surface + lifetime points + per-hour rate per surface).
+ *
+ * The response intentionally also exposes:
+ *   - `total` (alias of `lifetimePoints`)        — kept for older clients
+ *   - `exposure` (alias of `positions`)          — kept for Points.jsx
+ * Newer clients should consume `lifetimePoints`, `pointsPerHour`, `positions`.
+ */
 router.get('/wallet/:address', async (req, res) => {
   try {
     const address = requireAddress(req.params.address, 'address');
     const mode = req.query.mode === 'all' ? 'all' : 'live';
-    const totals = await pointsService.getAddressTotals(address, { mode });
-    const exposure = await pointsService.getCurrentExposure(address);
-    res.json({ success: true, data: { ...totals, exposure } });
+    const summary = await pointsService.getWalletSummary(address, { mode });
+    res.json({
+      success: true,
+      data: { ...summary, total: summary.lifetimePoints }
+    });
   } catch (err) {
     if (!(err instanceof PointsError)) logger.error('points/wallet error:', err);
     sendError(res, err, 'Failed to load wallet points');
+  }
+});
+
+/**
+ * GET /api/points/wallet/:address/positions
+ * Just the per-source positions array — the lightest read for components that
+ * only render the "where is my capital and what is each surface earning?" list.
+ */
+router.get('/wallet/:address/positions', async (req, res) => {
+  try {
+    const address = requireAddress(req.params.address, 'address');
+    const mode = req.query.mode === 'all' ? 'all' : 'live';
+    const positions = await pointsService.getPositions(address, { mode });
+    res.json({ success: true, data: { address, positions } });
+  } catch (err) {
+    if (!(err instanceof PointsError)) logger.error('points/wallet/positions error:', err);
+    sendError(res, err, 'Failed to load wallet positions');
+  }
+});
+
+/**
+ * GET /api/points/wallet/:address/rate
+ * Current per-hour earning rate only — for a polling "ticker" UI element.
+ */
+router.get('/wallet/:address/rate', async (req, res) => {
+  try {
+    const address = requireAddress(req.params.address, 'address');
+    const mode = req.query.mode === 'all' ? 'all' : 'live';
+    const rate = await pointsService.getWalletRate(address, { mode });
+    res.json({ success: true, data: rate });
+  } catch (err) {
+    if (!(err instanceof PointsError)) logger.error('points/wallet/rate error:', err);
+    sendError(res, err, 'Failed to load wallet rate');
   }
 });
 
@@ -74,13 +120,21 @@ router.get('/me', optionalAuth, async (req, res) => {
     if (!raw) {
       return res.json({
         success: true,
-        data: { address: null, total: 0, sources: [], exposure: [], rank: null }
+        data: {
+          address: null,
+          total: 0, lifetimePoints: 0,
+          pointsPerHour: 0, pointsPerDay: 0,
+          rank: null, epoch: null,
+          sources: [], positions: [], exposure: []
+        }
       });
     }
     const address = requireAddress(raw, req.query.address ? 'address' : 'walletAddress');
-    const totals = await pointsService.getAddressTotals(address, { mode });
-    const exposure = await pointsService.getCurrentExposure(address);
-    res.json({ success: true, data: { ...totals, exposure } });
+    const summary = await pointsService.getWalletSummary(address, { mode });
+    res.json({
+      success: true,
+      data: { ...summary, total: summary.lifetimePoints }
+    });
   } catch (err) {
     if (!(err instanceof PointsError)) logger.error('points/me error:', err);
     sendError(res, err, 'Failed to load your points');

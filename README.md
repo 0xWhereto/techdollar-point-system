@@ -26,10 +26,15 @@ together.
 
 - 5 substantive improvement passes already landed (see
   [`proving-ground/reports/20260420-205241/proof.md`](proving-ground/reports/20260420-205241/proof.md))
-- 6 test suites, **65 tests**, all passing — pure-function coverage of the
+- 7 test suites, **74 tests**, all passing — pure-function coverage of the
   time-weighted accrual math, the mint-event accrual math, the Curve
   LP-valuation invariant, the diminishing-returns detector, the in-tree
-  `pLimit`, and the structured `PointsError`.
+  `pLimit`, the structured `PointsError`, and the wallet-summary rate
+  helpers (`computePointsPerHour` / `aggregateRate`).
+- An end-to-end smoke
+  ([`tests/integration/walletSummary.smoke.js`](tests/integration/walletSummary.smoke.js))
+  spins up an in-memory SQLite, seeds a wallet with 25k minted USDte +
+  5k sUSDte stake + 20k Curve LP, and asserts the public response shape.
 - Designed to integrate with the
   [`almanac-engine`](https://github.com/0xWhereto/almanac-engine)
   autonomous improvement loop — `overnight.yaml` and `objective.yaml` at
@@ -190,8 +195,10 @@ Rooted at `/api/points` when wired into an Express app:
 | GET    | `/epochs`                  | none   | List seasons (simulation + live)              |
 | GET    | `/leaderboard?limit&offset&mode` | none | Top addresses by total points          |
 | GET    | `/stats?mode`              | none   | Total points, unique users, breakdown         |
-| GET    | `/wallet/:address?mode`    | none   | Per-address totals, breakdown, rank, exposure |
-| GET    | `/me?mode`                 | optional JWT | Same, scoped to req.user.walletAddress |
+| GET    | `/wallet/:address?mode`    | none   | Full dashboard payload (totals, per-hour rate, rank, active epoch, per-source positions). See below. |
+| GET    | `/wallet/:address/positions?mode` | none | Just the per-source positions array (lighter payload) |
+| GET    | `/wallet/:address/rate?mode` | none | Just `{pointsPerHour, pointsPerDay, epochBoost}` — for a polling ticker |
+| GET    | `/me?mode`                 | optional JWT | Same shape as `/wallet/:address`, scoped to req.user.walletAddress |
 | GET    | `/admin/health`            | admin JWT | Indexer + per-source health record         |
 | POST   | `/admin/sources`           | admin JWT | Upsert a source (paste in real Curve/Morpho addresses here) |
 | PATCH  | `/admin/sources/:key`      | admin JWT | Patch source fields                        |
@@ -200,6 +207,108 @@ Rooted at `/api/points` when wired into an Express app:
 | DELETE | `/admin/exclude/:address`  | admin JWT | Remove an excluded address                 |
 | POST   | `/admin/recompute`         | admin JWT | Trigger a one-shot indexer tick            |
 | POST   | `/admin/accrue`            | admin JWT | Re-run accrual over historical snapshots   |
+
+## Wallet dashboard payload
+
+`GET /api/points/wallet/:address` returns everything a points dashboard needs
+in one round trip:
+
+```json
+{
+  "success": true,
+  "data": {
+    "address": "0x1111…",
+    "lifetimePoints": 252916.67,
+    "total": 252916.67,                 // alias of lifetimePoints (legacy)
+    "pointsPerHour": 2916.67,           // sum across all time-weighted positions, after epoch boost
+    "pointsPerDay":  70000.00,
+    "rank": 42,                         // 1-indexed rank in the active mode
+    "epoch": {
+      "key": "season-1", "name": "Season 1", "mode": "live",
+      "boost": 1.0, "startAt": "…", "endAt": null
+    },
+    "sources": [ … ],                   // legacy lifetime-points breakdown
+    "positions": [
+      {
+        "sourceKey": "usdte_mint",
+        "sourceName": "USDte Mint",
+        "sourceType": "erc20_mint_event",
+        "accrualType": "mint_event",
+        "multiplier": 1.0,
+        "basePointsPerUsdPerDay": null,
+        "currentUsdValue": null,         // N/A — mint is one-shot
+        "lifetimeMintedUsd": 25000,      // total USDte the user has ever minted
+        "lifetimePoints": 250000,
+        "pointsPerHour": 0,              // one-shot, no continuous rate
+        "pointsPerDay":  0,
+        "lastEventAt": "2026-04-15T12:00:00.000Z"
+      },
+      {
+        "sourceKey": "susdte_stake",
+        "sourceName": "sUSDte Stake",
+        "sourceType": "erc20_balance",
+        "accrualType": "time_weighted",
+        "multiplier": 2.0,
+        "basePointsPerUsdPerDay": 1.0,
+        "currentUsdValue": 5000,         // last snapshot
+        "lifetimeMintedUsd": null,
+        "lifetimePoints": 416.67,
+        "pointsPerHour": 416.67,         // 5000 × 1/24 × 2 × boost
+        "pointsPerDay":  10000.00,
+        "projectedDailyPoints": 10000.00,// alias of pointsPerDay (legacy)
+        "lastSnapshotAt": "2026-04-21T12:00:00.000Z"
+      },
+      {
+        "sourceKey": "curve_lp",
+        "sourceName": "Curve USDte/USDC LP",
+        "sourceType": "curve_lp",
+        "accrualType": "time_weighted",
+        "multiplier": 3.0,
+        "basePointsPerUsdPerDay": 1.0,
+        "currentUsdValue": 20000,
+        "lifetimePoints": 2500.00,
+        "pointsPerHour": 2500.00,        // 20000 × 1/24 × 3 × boost
+        "pointsPerDay":  60000.00,
+        "lastSnapshotAt": "2026-04-21T12:00:00.000Z"
+      }
+    ],
+    "exposure": [ … ]                    // alias of positions (legacy)
+  }
+}
+```
+
+**Frontend recipe:**
+
+```jsx
+const { data } = await pointsApi.getWallet(address)
+
+<Headline>
+  <h1>{formatNumber(data.lifetimePoints)} pts</h1>
+  <p>+{formatNumber(data.pointsPerHour)} pts/hr · #{data.rank}</p>
+</Headline>
+
+{data.positions.map(p => (
+  <PositionCard key={p.sourceKey}>
+    <h3>{p.sourceName} · {p.multiplier}×</h3>
+    {p.accrualType === 'mint_event' ? (
+      <p>Minted ${formatNumber(p.lifetimeMintedUsd)} → {formatNumber(p.lifetimePoints)} pts (one-shot)</p>
+    ) : (
+      <>
+        <p>Allocated ${formatNumber(p.currentUsdValue)}</p>
+        <p>+{formatNumber(p.pointsPerHour)} pts/hr · {formatNumber(p.lifetimePoints)} pts earned</p>
+      </>
+    )}
+  </PositionCard>
+))}
+```
+
+Two lighter-weight endpoints are also available:
+
+- `GET /api/points/wallet/:address/positions` → just the `positions` array
+  (useful when only the position cards rerender)
+- `GET /api/points/wallet/:address/rate` → `{ pointsPerHour, pointsPerDay,
+  epochBoost, epochKey, epochMode }` (cheap to poll every few seconds for a
+  live "earnings ticker" element)
 
 ## Almanac integration
 
